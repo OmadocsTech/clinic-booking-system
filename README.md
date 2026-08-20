@@ -2,22 +2,25 @@
 
 A FastAPI REST API for booking, cancelling, rescheduling, and discovering 30-minute doctor appointments.
 
+**Public API / Interactive documentation:** [https://clinic-booking-system-3cmt.onrender.com/docs](https://clinic-booking-system-3cmt.onrender.com/docs)  
+**Health check:** [https://clinic-booking-system-3cmt.onrender.com/health](https://clinic-booking-system-3cmt.onrender.com/health)
+
 # Section 1: System Design
 
 ## 1. System Overview & Architecture
 
-The clinic booking system is designed as a modular, stateless REST API built to handle appointment scheduling for 5 doctors. The core architecture follows a layered pattern (Router $\rightarrow$ Service/Business Logic $\rightarrow$ Repository/Database Layer) to ensure clean separation of concerns, testability, and maintainability.
+The clinic booking system is designed as a modular, stateless REST API built to handle appointment scheduling for 5 doctors. The core architecture follows a layered pattern (Router → Service/Business Logic → Repository/Database Layer) to ensure clean separation of concerns, testability, and maintainability.
 
 ## 2. Data Models
 
 - **Doctor**: Represents the clinic's medical professionals.
-- `id` (UUID / Integer, Primary Key)
+- `id` (Integer, Primary Key)
 - `name` (String)
 - `specialization` (String)
 
 - **WorkingHours**: Defines the weekly working schedule for each doctor.
 - `id` (Primary Key)
-- `doctor_id` (Foreign Key $\rightarrow$ `Doctor`)
+- `doctor_id` (Foreign Key → `Doctor`)
 - `day_of_week` (Integer: 0 = Monday to 6 = Sunday)
 - `start_time` (Time, e.g., `09:00:00`)
 - `end_time` (Time, e.g., `17:00:00`)
@@ -27,13 +30,13 @@ The clinic booking system is designed as a modular, stateless REST API built to 
 - `name` (String)
 - `email` (String, Unique)
 
-- **Appointment**: Tracks active, cancelled, or rescheduled bookings.
+- **Appointment**: Tracks booked and cancelled appointments. Rescheduling updates the existing booked appointment to the new slot.
 - `id` (Primary Key)
-- `doctor_id` (Foreign Key $\rightarrow$ `Doctor`)
-- `patient_id` (Foreign Key $\rightarrow$ `Patient`)
+- `doctor_id` (Foreign Key → `Doctor`)
+- `patient_id` (Foreign Key → `Patient`)
 - `start_time` (DateTime, exact start of the 30-minute slot)
 - `end_time` (DateTime, exactly 30 minutes after `start_time`)
-- `status` (Enum: `BOOKED`, `CANCELLED`, `RESCHEDULED`)
+- `status` (Enum: `BOOKED`, `CANCELLED`)
 - `cancellation_reason` (String, Nullable)
 
 ---
@@ -50,8 +53,8 @@ The clinic booking system is designed as a modular, stateless REST API built to 
 
 ### B. Concurrency Control & Double-Booking Prevention
 
-- **Decision**: To ensure two patients cannot book the exact same 30-minute slot simultaneously, the system relies on database transactions combined with **row-level locking** (`SELECT ... FOR UPDATE`) or a unique database constraint on `(doctor_id, start_time)` for active bookings.
-- **Trade-off**: Prevents race conditions at the database level rather than application level, guaranteeing data integrity under high traffic.
+- **Decision**: A partial unique database index on active `(doctor_id, start_time)` pairs prevents two active bookings for the same doctor and slot. Cancelled appointments are excluded from the index, allowing their slots to be booked again.
+- **Trade-off**: This protects integrity at the database level. The partial-index approach depends on PostgreSQL/SQLite support, which both local and deployed environments provide.
 
 ### C. Validation Rules
 
@@ -144,9 +147,34 @@ Expected output: `clinic_booking`.
 
 > The included dependency ranges support modern Python versions; GitHub Actions uses Python 3.10 for a stable CI baseline.
 
+## Deployment and CI/CD
+
+### Deployed application
+
+- **Public API/ Interactive API documentation:** [https://clinic-booking-system-3cmt.onrender.com/docs](https://clinic-booking-system-3cmt.onrender.com/docs)
+- **Health check:** [https://clinic-booking-system-3cmt.onrender.com/health](https://clinic-booking-system-3cmt.onrender.com/health)
+
+The API is deployed as a Render Web Service and uses Neon PostgreSQL through the `DATABASE_URL` environment variable. The service start command seeds the initial sample data safely, then runs Uvicorn:
+
+```text
+python -m app.seed && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+```
+
+### Deployment trigger
+
+The `main` branch is the production branch. Render is connected to this branch and automatically builds and deploys the application after changes are merged or pushed to `main`. Render receives the source from GitHub, installs the packages in `requirements.txt`, runs the start command, and exposes the public URL above.
+
+### Pipeline
+
+GitHub Actions is defined in `.github/workflows/ci-cd.yaml`.
+
+- On every pull request targeting `main`, the workflow creates a Python 3.10 environment, installs dependencies, and runs `pytest`.
+- The same test job runs on pushes to `main`.
+- Render deploys the tested `main` branch automatically. In Render, Auto-Deploy should be set to **After CI Checks Pass** so the deployment waits for the GitHub Actions check.
+
 ## AI reflection
 
-1. I used AI to help structure the FastAPI modules, identify validation cases, draft tests, and improve this documentation and deployment checklist.
+1. I used AI to help structure the FastAPI modules, identify validation cases, draft tests, and improve the documentation and deployment checklist. I reviewed all suggestions and made the final decisions.
 2. A useful prompt was: “Review this appointment workflow for race conditions and cancellation behaviour.” It led to the partial unique index design, which keeps an active slot unique without blocking a new booking after cancellation.
-3. An initial suggestion treated an ordinary unique `(doctor_id, start_time)` index as sufficient. That was incomplete because it would prevent a cancelled slot from becoming bookable again. I caught it by writing the cancellation/rebooking test and changed it to a partial index.
-4. I independently chose dynamic slot generation because a five-doctor clinic does not need persistent future slot rows, and chose a one-hour booking buffer because it is explicitly offered as a bonus and is practical for clinic operations.
+3. An early AI-generated system-design draft was inaccurate: it described a `RESCHEDULED` appointment status even though the final implementation reschedules by updating the active appointment. I caught and corrected this by comparing the README against the actual models and rescheduling behaviour before submission.
+4. Two decisions I made without relying on AI were using PostgreSQL locally and Neon PostgreSQL for deployment, because both match the production database model, and retaining cancelled appointments instead of deleting them, because cancellation history is valuable for clinic operations and auditability.
